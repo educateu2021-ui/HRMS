@@ -5,19 +5,25 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import docx
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
 
 # ==============================================================================
 # 1. PAGE CONFIG & SESSION STATE INITIALIZATION
 # ==============================================================================
 st.set_page_config(
-    page_title="India HRMS Salary, Tax & Hike Simulator (FY 2026-27)",
+    page_title="Innoinf Technologies & Envahan — Salary Simulator & Offer Studio",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 DEFAULT_STATE = {
-    "company_name": "Innoinf Technologies Pvt Ltd (Envahan)",
+    "company_name": "INNOINF TECHNOLOGIES PRIVATE LIMITED",
+    "company_address": "3-684 Sakkavayal, Karaikudi, Sivaganga - 630108, Tamil Nadu",
+    "brand_unit": "Envahan Electric Vehicles",
     "emp_name": "Arjun Natarajan",
     "designation": "Senior Lead Engineer - EV Systems",
     "grade": "L3 - Mid-Management",
@@ -30,7 +36,9 @@ DEFAULT_STATE = {
     "var_pct": 10.0,
     "basic_pct": 50.0,
     "hra_pct": 50.0,
+    # PF Mode & Custom Minimum Value Input
     "pf_mode": "Statutory Ceiling (₹15k Basic ➔ ₹1,800/m)",
+    "custom_pf_min": 1800.0,
     "include_gratuity": True,
     "nps_emp_pct": 5.0,
     "regime_pref": "Auto-Recommend Best",
@@ -50,6 +58,11 @@ DEFAULT_STATE = {
     "rev_var_pct": 10.0,
     "arrear_months": 2,
     "perf_rating": "4 - Exceeds Expectations",
+    # Offer Letter Terms
+    "probation_months": 6,
+    "notice_period_days": 60,
+    "signatory_name": "Karthik Subramanian",
+    "signatory_title": "Director & Head of Engineering",
 }
 
 for k, v in DEFAULT_STATE.items():
@@ -58,17 +71,14 @@ for k, v in DEFAULT_STATE.items():
 
 
 # ==============================================================================
-# 2. CALLBACKS FOR RANDOM CTC, PRESETS & BIDIRECTIONAL SYNC
+# 2. CALLBACKS & GENERATORS
 # ==============================================================================
 def randomize_ctc_only():
-    """Fills any random exact or rounded CTC between ₹2.4L and ₹65L."""
-    # Mix of exact odd numbers (e.g. 13,47,850) and realistic package numbers
     if random.random() < 0.65:
         random_ctc = random.randint(240000, 5500000)
     else:
         random_ctc = random.randrange(250000, 6000000, 25000)
     st.session_state.annual_ctc = int(random_ctc)
-    # Auto-scale FBP so Special Allowance never goes negative on low CTCs
     max_safe_fbp = int(random_ctc * 0.08)
     if max_safe_fbp < 98400:
         st.session_state.fbp_lta = int(max_safe_fbp * 0.35)
@@ -78,9 +88,8 @@ def randomize_ctc_only():
 
 
 def randomize_full_profile():
-    """Randomizes candidate details, random non-round CTC, FBP & tax inputs."""
     sample_names = [
-        ("Karthik Subramanian", "Lead Chassis & CAE Engineer", "L3 - Mid-Management"),
+        ("Arjun Natarajan", "Senior Lead Engineer - EV Systems", "L3 - Mid-Management"),
         ("Divya Krishnan", "Embedded Firmware Architect", "L4 - Leadership & Exec"),
         ("Prashanth V", "Supply Chain & Sourcing Executive", "L2 - Individual Contributor"),
         ("Meenakshi Sundaram", "Graduate Engineer Trainee (GET)", "L1 - Entry & Support"),
@@ -90,22 +99,18 @@ def randomize_full_profile():
     st.session_state.emp_name = name
     st.session_state.designation = role
     st.session_state.grade = grade
-    st.session_state.work_state = random.choice(
-        ["Tamil Nadu", "Karnataka", "Maharashtra", "Telangana", "Delhi / NCR / Haryana"]
-    )
+    st.session_state.work_state = random.choice(["Tamil Nadu", "Karnataka", "Maharashtra", "Telangana", "Delhi / NCR / Haryana"])
     st.session_state.city_type = random.choice(["Metro (50% Basic)", "Non-Metro (40% Basic)"])
-    st.session_state.annual_ctc = random.randint(285000, 4850000)
-    st.session_state.var_pct = float(random.choice([0, 5, 10, 12, 15, 20]))
+    st.session_state.annual_ctc = random.randint(320000, 4850000)
+    st.session_state.var_pct = float(random.choice([0, 5, 10, 15, 20]))
     st.session_state.basic_pct = float(random.choice([50, 50, 55]))
     st.session_state.hra_pct = 50.0 if "Metro" in st.session_state.city_type else 40.0
     st.session_state.pf_mode = random.choice([
         "Statutory Ceiling (₹15k Basic ➔ ₹1,800/m)",
-        "Revised Ceiling (₹25k Basic ➔ ₹3,000/m)",
         "Uncapped (12% of Actual Basic)",
+        "Custom Minimum Value Threshold",
     ])
     st.session_state.nps_emp_pct = float(random.choice([0, 5, 10, 14]))
-
-    # Safe FBP scaling based on random CTC
     fixed_ctc_est = st.session_state.annual_ctc * (1 - st.session_state.var_pct / 100.0)
     fbp_budget = min(120000, int(fixed_ctc_est * 0.08))
     st.session_state.fbp_lta = round(fbp_budget * 0.40, -2)
@@ -113,7 +118,6 @@ def randomize_full_profile():
     st.session_state.fbp_meal = round(fbp_budget * 0.20, -2)
     st.session_state.fbp_books = round(fbp_budget * 0.15, -2)
     st.session_state.monthly_rent = round((fixed_ctc_est / 12) * 0.22, -2)
-    st.session_state.hike_pct = float(random.randint(8, 35))
 
 
 def set_preset_ctc(val: int):
@@ -129,7 +133,6 @@ def set_preset_ctc(val: int):
 # 3. CORE PAYROLL & TAX ENGINE (FY 2026-27 / AY 2027-28)
 # ==============================================================================
 def compute_new_regime_tax(taxable_inc: float) -> dict:
-    """Calculates FY 2026-27 New Tax Regime with ₹12L 87A Rebate & Marginal Relief."""
     ti = max(0.0, round(taxable_inc, -1))
     raw_tax = (
         max(0.0, ti - 400000) * 0.05
@@ -159,7 +162,6 @@ def compute_new_regime_tax(taxable_inc: float) -> dict:
 
 
 def compute_old_regime_tax(taxable_inc: float) -> dict:
-    """Calculates Old Tax Regime with ₹5L 87A Rebate."""
     ti = max(0.0, round(taxable_inc, -1))
     raw_tax = (
         max(0.0, ti - 250000) * 0.05
@@ -187,6 +189,7 @@ def calculate_salary_structure(
     basic_pct: float,
     hra_pct: float,
     pf_mode: str,
+    custom_pf_min: float,
     include_gratuity: bool,
     nps_emp_pct: float,
     work_state: str,
@@ -195,7 +198,6 @@ def calculate_salary_structure(
     tax_inputs: dict,
     regime_pref: str,
 ) -> dict:
-    """Complete Forward Payroll Engine with Auto-Scaling Plug Protection."""
     total_ctc = float(annual_ctc)
     variable_pay = round(total_ctc * (var_pct / 100.0))
     fixed_ctc = total_ctc - variable_pay
@@ -206,32 +208,26 @@ def calculate_salary_structure(
     hra_ann = round(basic_ann * (hra_pct / 100.0))
     hra_mo = round(hra_ann / 12.0)
 
-    # Employer EPF
+    # PF Calculation with Custom Minimum Threshold or 12% Toggle
     if pf_mode.startswith("Statutory"):
         emp_pf_mo = round(min(basic_mo, 15000) * 0.12)
     elif pf_mode.startswith("Revised"):
         emp_pf_mo = round(min(basic_mo, 25000) * 0.12)
     elif pf_mode.startswith("Uncapped"):
         emp_pf_mo = round(basic_mo * 0.12)
+    elif pf_mode.startswith("Custom"):
+        emp_pf_mo = round(max(custom_pf_min, min(basic_mo * 0.12, basic_mo)))
     else:
         emp_pf_mo = 0
     emp_pf_ann = emp_pf_mo * 12
 
-    # Gratuity (4.81% of Basic)
     gratuity_ann = round(basic_ann * (15.0 / 26.0) / 12.0) if include_gratuity else 0
-    gratuity_mo = round(gratuity_ann / 12.0)
-
-    # Employer NPS u/s 80CCD(2)
     nps_ann = round(basic_ann * (nps_emp_pct / 100.0))
-    nps_mo = round(nps_ann / 12.0)
 
-    # Estimate Gross before ESIC
     prelim_gross_ann = fixed_ctc - (emp_pf_ann + gratuity_ann + nps_ann)
     prelim_gross_mo = prelim_gross_ann / 12.0
 
-    # ESIC Gate (Monthly Gross <= ₹21,000)
     if prelim_gross_mo <= 21000:
-        # Solve Gross * (1 + 0.0325) = prelim_gross_ann
         gross_ann = round(prelim_gross_ann / 1.0325)
         employer_esi_ann = round(gross_ann * 0.0325)
         employee_esi_ann = round(gross_ann * 0.0075)
@@ -245,11 +241,9 @@ def calculate_salary_structure(
     gross_mo = round(gross_ann / 12.0)
     employer_retirals_ann = emp_pf_ann + employer_esi_ann + gratuity_ann + nps_ann
 
-    # Flexi-Benefit Basket & Special Allowance Plug
     requested_fbp = sum(fbp_dict.values())
     available_for_fbp_and_special = gross_ann - (basic_ann + hra_ann)
 
-    # If user typed a low random CTC where FBP exceeds remaining gross, auto-scale FBP
     fbp_scaled_warning = False
     if requested_fbp > max(0, available_for_fbp_and_special):
         fbp_scaled_warning = True
@@ -267,7 +261,6 @@ def calculate_salary_structure(
     total_fbp_ann = lta_ann + telecom_ann + meal_ann + books_ann
     special_ann = gross_ann - (basic_ann + hra_ann + total_fbp_ann)
 
-    # Professional Tax (State Slab)
     if gross_mo <= 15000 or work_state == "Delhi / NCR / Haryana":
         pt_ann = 0
     elif work_state in ["Tamil Nadu", "Maharashtra"]:
@@ -275,15 +268,12 @@ def calculate_salary_structure(
     else:
         pt_ann = 2400
 
-    # Dual-Regime Income Tax Calculation
     gross_taxable_salary = gross_ann + variable_pay + nps_ann
 
-    # New Regime Deductions: Standard Deduction ₹75,000 + 80CCD(2) Employer NPS up to 14% Basic
     nps_ded_new = min(nps_ann, round(basic_ann * 0.14))
     ded_new = 75000 + nps_ded_new
     new_tax_res = compute_new_regime_tax(gross_taxable_salary - ded_new)
 
-    # Old Regime Deductions: Std Ded ₹50,000 + HRA u/s 10(13A) + FBP + PT + 80C + 80CCD(1B) + 80D + 24(b) + 80CCD(2) (10%)
     ann_rent = tax_inputs["monthly_rent"] * 12
     hra_rule_1 = hra_ann
     hra_rule_2 = max(0, ann_rent - round(basic_ann * 0.10))
@@ -374,7 +364,6 @@ def calculate_salary_structure(
 
 
 def solve_ctc_from_target_net(target_mo_net: float, **kwargs) -> int:
-    """28-Iteration Binary Search Solver: Target Monthly Net ➔ Required Annual CTC."""
     low, high = 120000.0, 20000000.0
     for _ in range(28):
         mid = (low + high) / 2.0
@@ -387,8 +376,126 @@ def solve_ctc_from_target_net(target_mo_net: float, **kwargs) -> int:
 
 
 # ==============================================================================
-# 4. MULTI-TAB EXCEL WORKBOOK GENERATOR (IN-MEMORY .XLSX)
+# 4. WORD (.DOCX) OFFER LETTER & EXCEL WORKBOOK GENERATORS
 # ==============================================================================
+def build_word_offer_letter_bytes(s: dict, res: dict) -> bytes:
+    doc = docx.Document()
+
+    # Page Margins
+    sections = doc.sections
+    for section in sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+
+    # Company Header Banner
+    p_head = doc.add_paragraph()
+    p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_comp = p_head.add_run(f"{s['company_name']}\n")
+    run_comp.bold = True
+    run_comp.font.size = Pt(14)
+    run_comp.font.color.rgb = RGBColor(27, 54, 93)
+
+    run_sub = p_head.add_run(f"{s['company_address']}\nBrand Unit: {s['brand_unit']}\n")
+    run_sub.font.size = Pt(9.5)
+    run_sub.font.color.rgb = RGBColor(100, 116, 139)
+
+    p_div = doc.add_paragraph()
+    p_div.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_div = p_div.add_run("____________________________________________________________________")
+    run_div.font.color.rgb = RGBColor(0, 102, 102)
+
+    # Date & Candidate Info
+    doc.add_paragraph(f"Date: {s['joining_date']}")
+    p_to = doc.add_paragraph()
+    p_to.add_run(f"To,\n{s['emp_name']}\nDesignation: {s['designation']}\nGrade: {s['grade']}").bold = True
+
+    doc.add_heading("Sub: Offer of Employment & Compensation Structure", level=2)
+
+    p_body = doc.add_paragraph(
+        f"Dear {s['emp_name']},\n\n"
+        f"We are delighted to offer you employment with {s['company_name']} ({s['brand_unit']}) "
+        f"in the position of {s['designation']}. Your annual Cost to Company (CTC) will be "
+        f"₹{res['total_ctc']:,.0f} (Rupees {number_to_words(res['total_ctc'])} Only), payable on a monthly basis "
+        f"effective from your date of joining on or before {s['joining_date']}.\n\n"
+        f"Your employment will be subject to a probationary period of {s['probation_months']} months and "
+        f"governed by the standard terms of employment, confidentiality, and company policies."
+    )
+
+    doc.add_heading("Annexure A: Salary Structure Breakup", level=3)
+
+    # Add Salary Table
+    table = doc.add_table(rows=1, cols=3)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = "Salary Component"
+    hdr_cells[1].text = "Monthly (₹)"
+    hdr_cells[2].text = "Annual (₹)"
+
+    table_data = [
+        ("Basic Salary (50% Wage Code Anchor)", f"₹{res['basic_mo']:,.0f}", f"₹{res['basic_ann']:,.0f}"),
+        ("House Rent Allowance (HRA)", f"₹{res['hra_mo']:,.0f}", f"₹{res['hra_ann']:,.0f}"),
+        ("Leave Travel Allowance (LTA)", f"₹{round(res['lta_ann']/12):,.0f}", f"₹{res['lta_ann']:,.0f}"),
+        ("Telecom & Broadband Allowance", f"₹{round(res['telecom_ann']/12):,.0f}", f"₹{res['telecom_ann']:,.0f}"),
+        ("Food Vouchers & Periodicals", f"₹{round((res['meal_ann']+res['books_ann'])/12):,.0f}", f"₹{res['meal_ann']+res['books_ann']:,.0f}"),
+        ("Special Allowance (Balancing Plug)", f"₹{res['special_mo']:,.0f}", f"₹{res['special_ann']:,.0f}"),
+        ("GROSS FIXED SALARY (A)", f"₹{res['gross_mo']:,.0f}", f"₹{res['gross_ann']:,.0f}"),
+        ("Employer Provident Fund (EPF)", f"₹{res['emp_pf_mo']:,.0f}", f"₹{res['emp_pf_ann']:,.0f}"),
+        ("Employer ESIC Contribution", f"₹{round(res['employer_esi_ann']/12):,.0f}", f"₹{res['employer_esi_ann']:,.0f}"),
+        ("Employer Gratuity Accrual", f"₹{round(res['gratuity_ann']/12):,.0f}", f"₹{res['gratuity_ann']:,.0f}"),
+        ("Employer Corporate NPS u/s 80CCD(2)", f"₹{round(res['nps_ann']/12):,.0f}", f"₹{res['nps_ann']:,.0f}"),
+        ("FIXED COST TO COMPANY (Fixed CTC = A + Retirals)", f"₹{round(res['fixed_ctc']/12):,.0f}", f"₹{res['fixed_ctc']:,.0f}"),
+        ("Performance Linked Variable Pay", f"₹{round(res['variable_pay']/12):,.0f}", f"₹{res['variable_pay']:,.0f}"),
+        ("TOTAL COST TO COMPANY (TOTAL CTC)", f"₹{round(res['total_ctc']/12):,.0f}", f"₹{res['total_ctc']:,.0f}"),
+    ]
+
+    for comp, m_val, a_val in table_data:
+        row_cells = table.add_row().cells
+        row_cells[0].text = comp
+        row_cells[1].text = m_val
+        row_cells[2].text = a_val
+
+    # Table styling
+    for i, row in enumerate(table.rows):
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(9.5)
+            if i == 0:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.bold = True
+
+    doc.add_paragraph("\n")
+    p_sign = doc.add_paragraph()
+    p_sign.add_run(
+        f"For {s['company_name']}\n\n\n"
+        f"{s['signatory_name']}\n"
+        f"{s['signatory_title']}\n\n\n"
+        f"---------------------------------------------------\n"
+        f"I accept the terms and conditions of this offer:\n"
+        f"Candidate Signature & Date: ______________________"
+    )
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def number_to_words(num: int) -> str:
+    # Helper for formal letter wording
+    if num >= 10000000:
+        return f"{num // 10000000} Crore {number_to_words(num % 10000000)}"
+    elif num >= 100000:
+        return f"{num // 100000} Lakh {number_to_words(num % 100000)}"
+    elif num >= 1000:
+        return f"{num // 1000} Thousand {number_to_words(num % 1000)}"
+    else:
+        return str(num)
+
+
 def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
     wb = openpyxl.Workbook()
     ws_offer = wb.active
@@ -401,7 +508,7 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
     zebra_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     total_fill = PatternFill(start_color="E6FFFA", end_color="E6FFFA", fill_type="solid")
 
-    f_title = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+    f_title = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
     f_hdr = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
     f_bold = Font(name="Calibri", size=10, bold=True, color="1A202C")
     f_reg = Font(name="Calibri", size=10, bold=False, color="1A202C")
@@ -415,18 +522,25 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
 
     # --- Sheet 1: Offer Letter Annexure ---
     ws_offer.merge_cells("A1:D1")
-    ws_offer["A1"] = f"{s['company_name']} — ANNEXURE A: COMPENSATION STRUCTURE"
+    ws_offer["A1"] = f"{s['company_name']} | {s['company_address']}"
     ws_offer["A1"].font = f_title
     ws_offer["A1"].fill = navy_fill
     ws_offer["A1"].alignment = Alignment(horizontal="center", vertical="center")
-    ws_offer.row_dimensions[1].height = 30
+    ws_offer.row_dimensions[1].height = 25
+
+    ws_offer.merge_cells("A2:D2")
+    ws_offer["A2"] = "ANNEXURE A: COMPENSATION STRUCTURE BREAKUP"
+    ws_offer["A2"].font = f_title
+    ws_offer["A2"].fill = teal_fill
+    ws_offer["A2"].alignment = Alignment(horizontal="center", vertical="center")
+    ws_offer.row_dimensions[2].height = 22
 
     meta_rows = [
         ("Candidate Name", s["emp_name"], "Designation", s["designation"]),
         ("Grade / Band", s["grade"], "Work State & City", f"{s['work_state']} ({s['city_type']})"),
         ("Effective Date", s["joining_date"], "Active Tax Regime", res["active_regime"]),
     ]
-    for idx, (k1, v1, k2, v2) in enumerate(meta_rows, start=3):
+    for idx, (k1, v1, k2, v2) in enumerate(meta_rows, start=4):
         ws_offer[f"A{idx}"], ws_offer[f"B{idx}"] = k1, v1
         ws_offer[f"C{idx}"], ws_offer[f"D{idx}"] = k2, v2
         for c in ["A", "B", "C", "D"]:
@@ -435,7 +549,7 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
 
     headers = ["Salary Component", "Monthly (₹)", "Annual (₹)", "Statutory & Tax Notes"]
     for col_i, h_text in enumerate(headers, start=1):
-        c_cell = ws_offer.cell(row=7, column=col_i, value=h_text)
+        c_cell = ws_offer.cell(row=8, column=col_i, value=h_text)
         c_cell.font = f_hdr
         c_cell.fill = teal_fill
         c_cell.border = thin_bdr
@@ -445,22 +559,22 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
         ("House Rent Allowance (HRA)", round(res["hra_ann"] / 12), res["hra_ann"], "Sec 10(13A) Tax Exempt in Old Regime"),
         ("Leave Travel Allowance (LTA)", round(res["lta_ann"] / 12), res["lta_ann"], "Flexi-Basket Component"),
         ("Telecom & Internet Allowance", round(res["telecom_ann"] / 12), res["telecom_ann"], "Flexi-Basket Bill Reimbursement"),
-        ("Food Coupons & Periodicals", round((res["meal_ann"] + res["books_ann"]) / 12), res["meal_ann"] + res["books_ann"], "Tax-Exempt Meal Vouchers & Books"),
+        ("Food Coupons & Books", round((res["meal_ann"] + res["books_ann"]) / 12), res["meal_ann"] + res["books_ann"], "Tax-Exempt Meal Vouchers & Books"),
         ("Special Allowance", round(res["special_ann"] / 12), res["special_ann"], "Balancing Fixed Component"),
-        ("GROSS FIXED SALARY (A)", "=SUM(B8:B13)", "=SUM(C8:C13)", "Monthly & Annual Fixed Gross"),
-        ("Employer EPF Contribution (12%)", round(res["emp_pf_ann"] / 12), res["emp_pf_ann"], s["pf_mode"]),
+        ("GROSS FIXED SALARY (A)", "=SUM(B9:B14)", "=SUM(C9:C14)", "Monthly & Annual Fixed Gross"),
+        ("Employer EPF Contribution", round(res["emp_pf_ann"] / 12), res["emp_pf_ann"], s["pf_mode"]),
         ("Employer ESIC (3.25%)", round(res["employer_esi_ann"] / 12), res["employer_esi_ann"], "Applicable if Gross <= ₹21,000/m"),
         ("Employer Gratuity Accrual (4.81%)", round(res["gratuity_ann"] / 12), res["gratuity_ann"], "Payment of Gratuity Act"),
         ("Employer Corporate NPS u/s 80CCD(2)", round(res["nps_ann"] / 12), res["nps_ann"], "Deductible up to 14% Basic in New Regime"),
-        ("FIXED COST TO COMPANY (Fixed CTC)", "=B14+SUM(B15:B18)", "=C14+SUM(C15:C18)", "Guaranteed Annual Fixed CTC"),
+        ("FIXED COST TO COMPANY (Fixed CTC)", "=B15+SUM(B16:B19)", "=C15+SUM(C16:C19)", "Guaranteed Annual Fixed CTC"),
         ("Performance Linked Variable Pay", round(res["variable_pay"] / 12), res["variable_pay"], f"{s['var_pct']:.1f}% of Total CTC"),
-        ("TOTAL COST TO COMPANY (TOTAL CTC)", "=B19+B20", "=C19+C20", "100% Total Package"),
+        ("TOTAL COST TO COMPANY (TOTAL CTC)", "=B20+B21", "=C20+C21", "100% Total Package"),
         ("Less: Employee EPF + ESIC + PT", round((res["emp_pf_ann"] + res["employee_esi_ann"] + res["pt_ann"]) / 12), res["emp_pf_ann"] + res["employee_esi_ann"] + res["pt_ann"], "Statutory Deductions"),
         ("Less: Income Tax (Monthly TDS)", res["active_tax_mo"], res["active_tax_ann"], res["active_regime"]),
-        ("ESTIMATED NET MONTHLY TAKE-HOME (FIXED)", "=B14-B22-B23", "=C14-C22-C23", "Net Bank Credit (Excl. Variable)"),
+        ("ESTIMATED NET MONTHLY TAKE-HOME (FIXED)", "=B15-B23-B24", "=C15-C23-C24", "Net Bank Credit (Excl. Variable)"),
     ]
 
-    for r_idx, (comp, m_val, a_val, note) in enumerate(offer_data, start=8):
+    for r_idx, (comp, m_val, a_val, note) in enumerate(offer_data, start=9):
         ws_offer.cell(row=r_idx, column=1, value=comp)
         ws_offer.cell(row=r_idx, column=2, value=m_val).number_format = inr_fmt
         ws_offer.cell(row=r_idx, column=3, value=a_val).number_format = inr_fmt
@@ -473,7 +587,7 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
             cell.fill = total_fill if is_tot else zebra_fill
 
     # --- Sheet 2: Tax Planner Summary ---
-    ws_tax["A1"] = "DUAL-REGIME TAX COMPARISON (FY 2026-27)"
+    ws_tax["A1"] = f"{s['company_name']} — DUAL-REGIME TAX COMPARISON (FY 2026-27)"
     ws_tax["A1"].font = f_bold
     tax_rows = [
         ("Parameter", "New Tax Regime (₹)", "Old Tax Regime (₹)"),
@@ -524,7 +638,7 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
     for ws in [ws_offer, ws_tax, ws_reg]:
         for col in ws.columns:
             col_letter = get_column_letter(col[0].column)
-            ws.column_dimensions[col_letter].width = 26
+            ws.column_dimensions[col_letter].width = 28
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -533,27 +647,17 @@ def build_excel_workbook_bytes(s: dict, res: dict) -> bytes:
 
 
 # ==============================================================================
-# 5. SIDEBAR: MASTER CONTROLS & RANDOM CTC GENERATOR
+# 5. SIDEBAR: MASTER CONTROLS & OFFER STUDIO SETTINGS
 # ==============================================================================
 with st.sidebar:
-    st.title("⚙️ Payroll & CTC Controls")
-    st.caption("Type any exact/random CTC or click the generators below.")
+    st.markdown("### 🏢 Innoinf | Envahan HRMS")
+    st.caption("Official Salary & Offer Letter Studio")
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        st.button(
-            "🎲 Random CTC",
-            on_click=randomize_ctc_only,
-            use_container_width=True,
-            help="Fills a random non-round or standard CTC (e.g. ₹14,37,890) to test any value.",
-        )
+        st.button("🎲 Random CTC", on_click=randomize_ctc_only, use_container_width=True)
     with col_btn2:
-        st.button(
-            "🔀 Random Profile",
-            on_click=randomize_full_profile,
-            use_container_width=True,
-            help="Randomizes candidate profile, CTC, allowances, and tax inputs.",
-        )
+        st.button("🔀 Random Profile", on_click=randomize_full_profile, use_container_width=True)
 
     st.markdown("**Quick CTC Presets:**")
     p_cols = st.columns(4)
@@ -570,7 +674,6 @@ with st.sidebar:
         key="calc_mode",
     )
 
-    # Free-form number_input with step=1 so ANY random integer value works without step validation errors
     if st.session_state.calc_mode.startswith("Forward"):
         st.number_input(
             "Annual Total CTC (₹) — Type Any Value",
@@ -578,7 +681,6 @@ with st.sidebar:
             max_value=100000000,
             step=1,
             key="annual_ctc",
-            help="Enter any exact rupee figure (e.g., 1347892).",
         )
     else:
         st.number_input(
@@ -594,15 +696,18 @@ with st.sidebar:
     st.slider("HRA (% of Basic Salary)", 30.0, 60.0, step=5.0, key="hra_pct")
 
     st.selectbox(
-        "EPF Contribution Mode",
+        "PF Calculation Policy",
         [
             "Statutory Ceiling (₹15k Basic ➔ ₹1,800/m)",
-            "Revised Ceiling (₹25k Basic ➔ ₹3,000/m)",
             "Uncapped (12% of Actual Basic)",
-            "Opt-Out (Zero PF)",
+            "Custom Minimum Value Threshold",
         ],
         key="pf_mode",
     )
+
+    if st.session_state.pf_mode.startswith("Custom"):
+        st.number_input("Custom Minimum PF Value (₹/month)", 500, 20000, step=100, key="custom_pf_min")
+
     st.checkbox("Include Gratuity (4.81% of Basic) in CTC", key="include_gratuity")
     st.slider("Employer Corporate NPS u/s 80CCD(2) (% Basic)", 0.0, 14.0, step=1.0, key="nps_emp_pct")
     st.selectbox(
@@ -619,13 +724,14 @@ with st.sidebar:
 
 
 # ==============================================================================
-# 6. RUN ENGINE (FORWARD OR REVERSE BINARY SOLVER)
+# 6. RUN ENGINE
 # ==============================================================================
 common_kwargs = dict(
     var_pct=st.session_state.var_pct,
     basic_pct=st.session_state.basic_pct,
     hra_pct=st.session_state.hra_pct,
     pf_mode=st.session_state.pf_mode,
+    custom_pf_min=st.session_state.custom_pf_min,
     include_gratuity=st.session_state.include_gratuity,
     nps_emp_pct=st.session_state.nps_emp_pct,
     work_state=st.session_state.work_state,
@@ -654,72 +760,62 @@ res = calculate_salary_structure(annual_ctc=st.session_state.annual_ctc, **commo
 
 
 # ==============================================================================
-# 7. MAIN DASHBOARD HEADER & KPI CARDS
+# 7. MAIN DASHBOARD HEADER & LETTERHEAD BRANDING
 # ==============================================================================
-st.markdown("## 🇮🇳 Enterprise HRMS Salary Structure, Tax & Appraisal Simulator (FY 2026–27)")
+st.markdown(
+    f"""
+    <div style="background-color: #1B365D; padding: 16px; border-radius: 8px; color: white; text-align: center; margin-bottom: 20px;">
+        <h2 style="margin: 0; color: #FFFFFF; font-size: 22px;">{st.session_state.company_name}</h2>
+        <p style="margin: 4px 0 0 0; font-size: 13px; color: #CBD5E0;">{st.session_state.company_address} | Brand Unit: {st.session_state.brand_unit}</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric(
-    "Annual Total CTC",
-    f"₹{res['total_ctc']:,.0f}",
-    f"Fixed: ₹{res['fixed_ctc']:,.0f}",
-)
-kpi2.metric(
-    "Monthly Gross Salary",
-    f"₹{res['gross_mo']:,.0f}",
-    f"Annual: ₹{res['gross_ann']:,.0f}",
-)
-kpi3.metric(
-    "Monthly Net Take-Home (Fixed)",
-    f"₹{res['net_fixed_mo']:,.0f}",
-    f"{res['net_fixed_ann'] / res['fixed_ctc'] * 100:.1f}% of Fixed CTC",
-)
+kpi1.metric("Annual Total CTC", f"₹{res['total_ctc']:,.0f}", f"Fixed: ₹{res['fixed_ctc']:,.0f}")
+kpi2.metric("Monthly Gross Salary", f"₹{res['gross_mo']:,.0f}", f"Annual: ₹{res['gross_ann']:,.0f}")
+kpi3.metric("Monthly Net Take-Home (Fixed)", f"₹{res['net_fixed_mo']:,.0f}", f"{res['net_fixed_ann'] / res['fixed_ctc'] * 100:.1f}% of Fixed")
 tax_diff = abs(res["new_tax"]["total_tax"] - res["old_tax"]["total_tax"])
-kpi4.metric(
-    "Annual Income Tax (TDS)",
-    f"₹{res['active_tax_ann']:,.0f}",
-    f"Saves ₹{tax_diff:,.0f} ({res['active_regime']})",
-)
+kpi4.metric("Annual Income Tax (TDS)", f"₹{res['active_tax_ann']:,.0f}", f"Saves ₹{tax_diff:,.0f} ({res['active_regime']})")
 
-# Compliance & Auto-Scaling Alerts
 c_a1, c_a2, c_a3 = st.columns(3)
 with c_a1:
     if res["wage_code_ok"]:
-        st.success("✅ **Code on Wages (50% Rule):** Compliant (Basic ≥ 50% of Fixed CTC)")
+        st.success("✅ **Code on Wages (50% Rule):** Compliant")
     else:
-        st.warning("⚠️ **Code on Wages Alert:** Basic is below 50% of Fixed CTC.")
+        st.warning("⚠️ **Code on Wages Alert:** Basic < 50% of Fixed CTC")
 with c_a2:
     if res["esic_applicable"]:
-        st.info("🏥 **ESIC Applicable:** Monthly Gross ≤ ₹21,000 (3.25% Emp / 0.75% Emp)")
+        st.info("🏥 **ESIC Applicable:** Gross ≤ ₹21k/mo")
     else:
-        st.success("✅ **ESIC Exempt:** Monthly Gross > ₹21,000")
+        st.success("✅ **ESIC Exempt:** Gross > ₹21k/mo")
 with c_a3:
     if res["fbp_scaled_warning"]:
-        st.warning("⚠️ **FBP Auto-Scaled:** Flexi allowances were capped to prevent negative Special Allowance.")
+        st.warning("⚠️ **FBP Auto-Scaled:** Allowances adjusted to prevent negative Special Allowance.")
     else:
-        st.success(f"✅ **Special Allowance Plug:** ₹{res['special_mo']:,.0f}/month")
+        st.success(f"✅ **Special Allowance Plug:** ₹{res['special_mo']:,.0f}/mo")
 
 
 # ==============================================================================
-# 8. FOUR INTERACTIVE WORKSPACE TABS
+# 8. FOUR WORKSPACE TABS (INCLUDING DEDICATED OFFER LETTER STUDIO)
 # ==============================================================================
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 1. Structure & FBP Designer",
-    "⚖️ 2. Dual-Regime Tax Planner (FY 26-27)",
-    "📈 3. Hike & Appraisal Modeler",
-    "📄 4. Offer Letter Annexure & Excel Export",
+    "⚖️ 2. Dual-Regime Tax Planner",
+    "📈 3. Appraisal & Hike Modeler",
+    "📄 4. Offer Letter Studio & Word/Excel Export",
 ])
 
-# --- TAB 1: SALARY STRUCTURE & FBP ---
+# --- TAB 1: STRUCTURE & FBP ---
 with tab1:
     col_l, col_r = st.columns([1, 2])
     with col_l:
         st.subheader("Flexi-Benefit Basket (Annual ₹)")
-        st.caption("Unclaimed FBP automatically flows into Special Allowance.")
         st.number_input("Leave Travel Allowance (LTA)", 0, 300000, step=1000, key="fbp_lta")
-        st.number_input("Telecom & Broadband Reimbursement", 0, 120000, step=1000, key="fbp_telecom")
-        st.number_input("Food / Meal Coupons (Pluxee/Zaggle)", 0, 50000, step=600, key="fbp_meal")
-        st.number_input("Books & Periodicals Allowance", 0, 120000, step=1000, key="fbp_books")
+        st.number_input("Telecom & Broadband", 0, 120000, step=1000, key="fbp_telecom")
+        st.number_input("Food / Meal Coupons", 0, 50000, step=600, key="fbp_meal")
+        st.number_input("Books & Periodicals", 0, 120000, step=1000, key="fbp_books")
 
     with col_r:
         st.subheader("Live Master CTC Breakdown")
@@ -731,7 +827,7 @@ with tab1:
             ("Food Coupons & Books", round((res["meal_ann"] + res["books_ann"]) / 12), res["meal_ann"] + res["books_ann"], "Flexi-Basket"),
             ("Special Allowance (Balancing Plug)", res["special_mo"], res["special_ann"], "Earnings"),
             ("GROSS FIXED SALARY (A)", res["gross_mo"], res["gross_ann"], "Subtotal"),
-            ("Employer EPF (12%)", res["emp_pf_mo"], res["emp_pf_ann"], "Employer Retiral"),
+            ("Employer EPF Contribution", res["emp_pf_mo"], res["emp_pf_ann"], "Employer Retiral"),
             ("Employer ESIC (3.25%)", round(res["employer_esi_ann"] / 12), res["employer_esi_ann"], "Employer Retiral"),
             ("Employer Gratuity (4.81%)", round(res["gratuity_ann"] / 12), res["gratuity_ann"], "Employer Retiral"),
             ("Employer Corporate NPS (80CCD(2))", round(res["nps_ann"] / 12), res["nps_ann"], "Employer Retiral"),
@@ -757,10 +853,10 @@ with tab2:
         st.subheader("Old Regime Tax Declarations")
         st.number_input("Actual Monthly Rent Paid (₹/mo)", 0, 500000, step=1000, key="monthly_rent")
         st.caption(f"Auto-Included Employee EPF in 80C: **₹{res['emp_pf_ann']:,.0f}**")
-        st.number_input("Other Sec 80C (PPF, ELSS, LIC, Tuition)", 0, 150000, step=5000, key="sec_80c_other")
-        st.number_input("Sec 80CCD(1B) Self NPS (Max ₹50,000)", 0, 50000, step=5000, key="sec_80ccd1b")
-        st.number_input("Sec 80D Medical Insurance (Max ₹1,00,000)", 0, 100000, step=5000, key="sec_80d")
-        st.number_input("Sec 24(b) Home Loan Interest (Max ₹2,00,000)", 0, 200000, step=10000, key="sec_24b")
+        st.number_input("Other Sec 80C (PPF, ELSS, LIC)", 0, 150000, step=5000, key="sec_80c_other")
+        st.number_input("Sec 80CCD(1B) Self NPS (Max ₹50k)", 0, 50000, step=5000, key="sec_80ccd1b")
+        st.number_input("Sec 80D Medical Insurance", 0, 100000, step=5000, key="sec_80d")
+        st.number_input("Sec 24(b) Home Loan Interest", 0, 200000, step=10000, key="sec_24b")
 
         st.markdown("#### Sec 10(13A) HRA Exemption Working")
         r1, r2, r3 = res["hra_rules"]
@@ -798,21 +894,12 @@ with tab2:
             height=580,
         )
 
-# --- TAB 3: HIKE & APPRAISAL MODELER ---
+# --- TAB 3: APPRAISAL & HIKE MODELER ---
 with tab3:
     h_col1, h_col2 = st.columns([1, 2])
     with h_col1:
         st.subheader("Appraisal Inputs")
-        st.selectbox(
-            "Performance Rating",
-            [
-                "5 - Outstanding (Top 5%)",
-                "4 - Exceeds Expectations",
-                "3 - Meets Expectations",
-                "2 - Needs Improvement",
-            ],
-            key="perf_rating",
-        )
+        st.selectbox("Performance Rating", ["5 - Outstanding", "4 - Exceeds Expectations", "3 - Meets Expectations"], key="perf_rating")
         st.slider("Proposed CTC Hike (%)", 0.0, 100.0, step=0.5, key="hike_pct")
         st.slider("Revised Variable Pay (% of New CTC)", 0.0, 40.0, step=0.5, key="rev_var_pct")
         st.slider("Backdated Arrears Months", 0, 12, step=1, key="arrear_months")
@@ -823,17 +910,13 @@ with tab3:
         rev_kwargs["var_pct"] = st.session_state.rev_var_pct
         rev_res = calculate_salary_structure(annual_ctc=rev_ctc, **rev_kwargs)
 
-        real_net_hike_pct = (
-            (rev_res["net_fixed_mo"] - res["net_fixed_mo"]) / res["net_fixed_mo"] * 100.0
-            if res["net_fixed_mo"] > 0
-            else 0.0
-        )
+        real_net_hike_pct = ((rev_res["net_fixed_mo"] - res["net_fixed_mo"]) / res["net_fixed_mo"] * 100.0) if res["net_fixed_mo"] > 0 else 0.0
         arrear_gross = (rev_res["gross_mo"] - res["gross_mo"]) * st.session_state.arrear_months
 
         hk1, hk2, hk3 = st.columns(3)
         hk1.metric("Revised Annual CTC", f"₹{rev_ctc:,.0f}", f"+₹{rev_ctc - res['total_ctc']:,.0f} ({st.session_state.hike_pct:.1f}%)")
-        hk2.metric("Revised Monthly Net In-Hand", f"₹{rev_res['net_fixed_mo']:,.0f}", f"+₹{rev_res['net_fixed_mo'] - res['net_fixed_mo']:,.0f}/mo ({real_net_hike_pct:.1f}% Real)")
-        hk3.metric(f"Backdated Arrears ({st.session_state.arrear_months}m)", f"₹{arrear_gross:,.0f}", "One-Time Gross Arrear")
+        hk2.metric("Revised Monthly In-Hand", f"₹{rev_res['net_fixed_mo']:,.0f}", f"+₹{rev_res['net_fixed_mo'] - res['net_fixed_mo']:,.0f}/mo ({real_net_hike_pct:.1f}% Real)")
+        hk3.metric(f"Backdated Arrears ({st.session_state.arrear_months}m)", f"₹{arrear_gross:,.0f}", "One-Time Gross Payout")
 
         hike_df = pd.DataFrame([
             ("Total Annual CTC", res["total_ctc"], rev_ctc, rev_ctc - res["total_ctc"]),
@@ -849,20 +932,44 @@ with tab3:
             hide_index=True,
         )
 
-# --- TAB 4: OFFER LETTER ANNEXURE & EXCEL DOWNLOAD ---
+# --- TAB 4: OFFER LETTER STUDIO & WORD/EXCEL EXPORT ---
 with tab4:
-    st.subheader("Candidate & Company Details for Offer Letter")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.text_input("Company Name", key="company_name")
-    m2.text_input("Candidate Name", key="emp_name")
-    m3.text_input("Designation", key="designation")
-    m4.text_input("Joining / Effective Date", key="joining_date")
+    st.subheader("📄 Offer Letter Studio & Professional Document Generation")
+    st.caption("Customize candidate details, probationary terms, and corporate signatories below, then download the editable Microsoft Word offer letter or multi-tab Excel workbook.")
 
-    excel_bytes = build_excel_workbook_bytes(st.session_state, res)
-    st.download_button(
-        label="📥 Download Multi-Tab Excel Offer Letter & Tax Workbook (.xlsx)",
-        data=excel_bytes,
-        file_name=f"Offer_Structure_{st.session_state.emp_name.replace(' ', '_')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-    )
+    o_col1, o_col2 = st.columns(2)
+    with o_col1:
+        st.text_input("Company Header Name", key="company_name")
+        st.text_input("Registered Address", key="company_address")
+        st.text_input("Brand Unit / Subsidiary", key="brand_unit")
+        st.text_input("Candidate Full Name", key="emp_name")
+        st.text_input("Designation / Title", key="designation")
+    with o_col2:
+        st.text_input("Job Grade / Band", key="grade")
+        st.text_input("Joining Date", key="joining_date")
+        st.number_input("Probation Period (Months)", 1, 12, step=1, key="probation_months")
+        st.text_input("Authorized Signatory Name", key="signatory_name")
+        st.text_input("Signatory Designation", key="signatory_title")
+
+    st.divider()
+
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        word_bytes = build_word_offer_letter_bytes(st.session_state, res)
+        st.download_button(
+            label="📝 Download Editable Offer Letter (.docx)",
+            data=word_bytes,
+            file_name=f"Offer_Letter_{st.session_state.emp_name.replace(' ', '_')}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            type="primary",
+            use_container_width=True,
+        )
+    with dl_col2:
+        excel_bytes = build_excel_workbook_bytes(st.session_state, res)
+        st.download_button(
+            label="📊 Download Multi-Tab Excel Tax & CTC Workbook (.xlsx)",
+            data=excel_bytes,
+            file_name=f"Salary_Structure_{st.session_state.emp_name.replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
